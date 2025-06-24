@@ -1,4 +1,4 @@
-# WD Discord TTS Bot 🔊🎙️
+# WD Discord TTS Bot V0.1 🔊🎙️
 
 A Discord Text-to-Speech bot built with ❤️ by the Wanton Destruction crew.  
 Supports multi-voice synthesis via [alltalk](https://github.com/erew123/alltalk_tts) and optional integration with [xtts-v2-server](https://github.com/daswer123/xtts-v2-server) or other RVC-compatible backends.
