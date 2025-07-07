@@ -17,32 +17,41 @@ bot = discord.Client(intents=intents)
 TTS_TIMEOUT_SEC = 60 * 60  # 1 hour
 
 queue = asyncio.Queue()
-last_activity = None
-voice_client = None
+last_activity = {} # Per-guild cache of last activity time
 
 async def tts_worker():
-    global voice_client, last_activity
     while True:
         print("Worker: waiting for next TTS job...")
         user, text, message = await queue.get()
+        guild_id = message.guild.id
         print(f"Worker: Got message from {user} ({user.id}) in channel {message.channel.id}: '{text}'")
-        last_activity = asyncio.get_event_loop().time()
+        last_activity[guild_id] = asyncio.get_event_loop().time()
 
         # Find which VC the user is in
         vc = getattr(user, "voice", None)
-        print(f"Worker: User.voice = {vc}")
         if not vc or not vc.channel:
             await message.channel.send(f"{user.mention} Please join a voice channel to use TTS.")
             print("Worker: User not in voice channel, skipping job.")
             continue
 
         # (Re)join user's channel if needed
+        voice_client = None
         try:
-            if not voice_client or not voice_client.is_connected() or voice_client.channel != vc.channel:
+            # Get the voice client for the guild
+            guild_vc = discord.utils.get(bot.voice_clients, guild=message.guild)
+
+            if guild_vc and guild_vc.is_connected():
+                if guild_vc.channel != vc.channel:
+                    print(f"Worker: Moving to voice channel: {vc.channel}")
+                    await guild_vc.move_to(vc.channel)
+                    voice_client = guild_vc
+                else:
+                    print("Worker: Already in the correct voice channel.")
+                    voice_client = guild_vc
+            else:
                 print(f"Worker: Connecting to voice channel: {vc.channel}")
-                if voice_client:
-                    await voice_client.disconnect(force=True)
                 voice_client = await vc.channel.connect()
+
         except Exception as e:
             await message.channel.send(f"Bot could not join your voice channel: {e}")
             print(f"Worker: Failed to join VC: {e}")
@@ -81,7 +90,8 @@ async def tts_worker():
 
     # 2. Parse the JSON for the output_file_url
             result = resp.json()
-            wav_url = f"http://10.69.69.28:7851{result['output_file_url']}"
+            # Use the URL from config, not a hardcoded one
+            wav_url = f"{config.ALLTALK_API_URL}{result['output_file_url']}"
             print(f"Worker: Downloading generated audio from {wav_url}")
 
     # 3. Download the actual WAV
@@ -110,7 +120,6 @@ async def tts_worker():
             await message.channel.send(f"Playback error: {e}")
             print(f"Worker: Playback error: {e}")
         finally:
-            pass
             if os.path.exists(wav_path):
                 os.remove(wav_path)
                 print(f"Worker: Deleted {wav_path}")
@@ -126,22 +135,20 @@ async def tts_worker():
         print("Worker: Job done, waiting for next.")
 
 async def inactivity_monitor():
-    global voice_client, last_activity
     while True:
         await asyncio.sleep(60)
-        if voice_client and voice_client.is_connected():
-            now = asyncio.get_event_loop().time()
+        now = asyncio.get_event_loop().time()
+        for vc in bot.voice_clients:
+            guild_id = vc.guild.id
             # Check if channel is empty (except the bot)
-            humans = [m for m in voice_client.channel.members if not m.bot]
-            print(f"Monitor: Members in VC: {[m.name for m in voice_client.channel.members]}")
+            humans = [m for m in vc.channel.members if not m.bot]
+            print(f"Monitor: Members in VC {vc.channel.name} ({guild_id}): {[m.name for m in vc.channel.members]}")
             if not humans:
-                print("Monitor: Channel empty, disconnecting bot.")
-                await voice_client.disconnect(force=True)
-                voice_client = None
-            elif last_activity and (now - last_activity) > TTS_TIMEOUT_SEC:
-                print("Monitor: Inactivity timeout reached, disconnecting bot.")
-                await voice_client.disconnect(force=True)
-                voice_client = None
+                print(f"Monitor: Channel empty in {vc.guild.name}, disconnecting bot.")
+                await vc.disconnect(force=True)
+            elif guild_id in last_activity and (now - last_activity[guild_id]) > TTS_TIMEOUT_SEC:
+                print(f"Monitor: Inactivity timeout in {vc.guild.name}, disconnecting bot.")
+                await vc.disconnect(force=True)
 
 @bot.event
 async def on_ready():
