@@ -37,21 +37,26 @@ async def tts_worker():
         # (Re)join user's channel if needed
         voice_client = None
         try:
-            # Get the voice client for the guild
+            # Clean up stale voice clients
             guild_vc = discord.utils.get(bot.voice_clients, guild=message.guild)
 
-            if guild_vc and guild_vc.is_connected():
-                if guild_vc.channel != vc.channel:
-                    print(f"Worker: Moving to voice channel: {vc.channel}")
-                    await guild_vc.move_to(vc.channel)
-                    voice_client = guild_vc
+            if guild_vc:
+                if guild_vc.is_connected():
+                    if guild_vc.channel != vc.channel:
+                        print(f"Worker: Moving to voice channel: {vc.channel}")
+                        await guild_vc.move_to(vc.channel)
+                    else:
+                        print("Worker: Already in the correct voice channel.")
                 else:
-                    print("Worker: Already in the correct voice channel.")
-                    voice_client = guild_vc
+                    print("Worker: Stale VC found, disconnecting.")
+                    await guild_vc.disconnect(force=True)
+                    print(f"Worker: Connecting fresh to {vc.channel}")
+                    guild_vc = await vc.channel.connect()
             else:
                 print(f"Worker: Connecting to voice channel: {vc.channel}")
-                voice_client = await vc.channel.connect()
+                guild_vc = await vc.channel.connect()
 
+            voice_client = guild_vc
         except Exception as e:
             await message.channel.send(f"Bot could not join your voice channel: {e}")
             print(f"Worker: Failed to join VC: {e}")
@@ -159,6 +164,23 @@ async def on_ready():
 @bot.event
 async def on_message(message):
     print(f"on_message: Received message in channel {message.channel.id} from {message.author}: '{message.content}'")
+
+    # Ignore bots
+    if message.author.bot:
+        print("on_message: Message from bot, ignoring.")
+        return
+
+    # Command to leave the voice channel
+    if message.content.strip().lower() == '!leave':
+        guild_vc = discord.utils.get(bot.voice_clients, guild=message.guild)
+        if guild_vc and guild_vc.is_connected():
+            print(f"on_message: Received !leave command, disconnecting from {guild_vc.channel.name}")
+            await guild_vc.disconnect()
+            await message.channel.send("Left the voice channel.")
+        else:
+            print("on_message: Received !leave command, but not in a voice channel.")
+            await message.channel.send("I'm not in a voice channel.")
+        return
 
     # Only in your chosen channel, and ignore bots
     if message.channel.id != config.TTS_CHANNEL_ID:
