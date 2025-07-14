@@ -1,5 +1,5 @@
 discord.py==2.3.2
 aiohttp
 requests
-google-generativeai
+google-genai>=1.16.0
 PyNaCl
