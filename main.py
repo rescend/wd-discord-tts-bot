@@ -11,26 +11,30 @@ import config  # This should contain your DISCORD_BOT_TOKEN, TTS_CHANNEL_ID, and
 
 # Load Opus codec for voice support
 try:
-    discord.opus.load_opus('/opt/homebrew/lib/libopus.dylib')
-    print("Opus loaded successfully with full path")
+    # Try common Linux paths first (for Docker/server environments)
+    discord.opus.load_opus('libopus.so.0')
+    print("Opus loaded successfully with 'libopus.so.0' (Linux)")
 except discord.opus.OpusNotLoaded:
     try:
-        discord.opus.load_opus('libopus')
-        print("Opus loaded successfully with 'libopus'")
+        discord.opus.load_opus('libopus.so')
+        print("Opus loaded successfully with 'libopus.so' (Linux)")
     except discord.opus.OpusNotLoaded:
         try:
             discord.opus.load_opus('opus')
             print("Opus loaded successfully with 'opus'")
         except discord.opus.OpusNotLoaded:
-            print("WARNING: Could not load Opus codec. Voice features may not work.")
-            print("Available Opus libraries:")
-            import subprocess
             try:
-                result = subprocess.run(['find', '/opt/homebrew', '-name', '*opus*'], 
-                                      capture_output=True, text=True)
-                print(result.stdout)
-            except:
-                pass
+                # macOS Homebrew path (for local development)
+                discord.opus.load_opus('/opt/homebrew/lib/libopus.dylib')
+                print("Opus loaded successfully with macOS Homebrew path")
+            except discord.opus.OpusNotLoaded:
+                try:
+                    discord.opus.load_opus('libopus')
+                    print("Opus loaded successfully with 'libopus'")
+                except discord.opus.OpusNotLoaded:
+                    print("WARNING: Could not load Opus codec. Voice features may not work.")
+                    print("Make sure libopus is installed in the container/system.")
+                    # Don't exit - let the bot try to continue without Opus
 
 intents = discord.Intents.default()
 intents.message_content = True

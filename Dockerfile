@@ -6,8 +6,13 @@ WORKDIR /app
 # Copy project files
 COPY . .
 
-# Install requirements
-RUN apt-get update && apt-get install -y ffmpeg
+# Install system dependencies including Opus library for Discord voice
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    libopus0 \
+    libopus-dev \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --upgrade pip && \
     pip install -r requirements.txt
