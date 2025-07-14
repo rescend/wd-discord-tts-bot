@@ -3,6 +3,7 @@ import requests
 import asyncio
 import json
 import os
+import google.generativeai as genai
 
 import config  # This should contain your DISCORD_BOT_TOKEN, TTS_CHANNEL_ID, and COQUI_TTS_URL
 
@@ -62,53 +63,83 @@ async def tts_worker():
             print(f"Worker: Failed to join VC: {e}")
             continue
 
-        # Query AllTalk TTS for WAV audio
+        # Query Gemini TTS for WAV audio
         try:
-            payload = {
-                "text_input": text,
-                "text_filtering": "standard",
-                "character_voice_gen": "female_07.wav",
-                "rvccharacter_voice_gen": "Disabled",
-                "rvccharacter_pitch": 0,
-                "narrator_enabled": 'false',
-                "narrator_voice_gen": "",
-                "rvcnarrator_voice_gen": "Disabled",
-                "rvcnarrator_pitch": 0,
-                "text_not_inside": "character",
-                "language": "en",
-                "output_file_name": f"tts_{message.id}",
-                "output_file_timestamp": False,
-                "autoplay": False,
-                "autoplay_volume": 0.5,
-                "speed": 1.0,
-                "pitch": 1,
-                "temperature": 1.0,
-                "repetition_penalty": 9.0
-            }
-            print(f"Worker: Sending TTS request to AllTalk with payload: {payload}")
-            resp = requests.post(config.ALLTALK_TTS_URL, data=payload, timeout=30)
-            print(f"Worker: AllTalk response status: {resp.status_code}")
-            if resp.status_code != 200:
-                await message.channel.send(f"TTS server error: {resp.text[:100]}")
-                print(f"Worker: TTS server error: {resp.text}")
+            print("Worker: Configuring Gemini API")
+            if not hasattr(config, 'GEMINI_API_KEY') or not config.GEMINI_API_KEY:
+                await message.channel.send("Gemini API key is not configured.")
+                print("Worker: GEMINI_API_KEY not found in config.")
                 continue
+            
+            genai.configure(api_key=config.GEMINI_API_KEY)
 
-    # 2. Parse the JSON for the output_file_url
-            result = resp.json()
-            # Use the URL from config, not a hardcoded one
-            wav_url = f"{config.ALLTALK_API_URL}{result['output_file_url']}"
-            print(f"Worker: Downloading generated audio from {wav_url}")
+            print(f"Worker: Sending TTS request to Gemini for text: '{text}'")
+            # Note: The 'gemini-2.5-flash-preview-0514-tts' model is an example.
+            # You can explore other models and voices as they become available.
+            tts_model = genai.GenerativeModel('models/gemini-2.5-flash-preview-0514-tts')
+            
+            # Generate the audio, specifying the output format.
+            response = tts_model.generate_content(text, 
+                                                  generation_config=genai.GenerationConfig(response_mime_type="audio/wav"))
 
-    # 3. Download the actual WAV
-            wav_resp = requests.get(wav_url)
+            # Save the audio file directly from the response.
             wav_path = f"tts_{message.id}.wav"
             with open(wav_path, "wb") as f:
-                f.write(wav_resp.content)
+                f.write(response.audio_content())
             print(f"Worker: Audio saved to {wav_path}")
+
         except Exception as e:
-         await message.channel.send(f"Failed to fetch TTS: {e}")
-         print(f"Worker: Exception during TTS fetch: {e}")
-         continue
+            await message.channel.send(f"Failed to fetch TTS from Gemini: {e}")
+            print(f"Worker: Exception during Gemini TTS fetch: {e}")
+            continue
+
+        # # Query AllTalk TTS for WAV audio
+        # try:
+        #     payload = {
+        #         "text_input": text,
+        #         "text_filtering": "standard",
+        #         "character_voice_gen": "female_07.wav",
+        #         "rvccharacter_voice_gen": "Disabled",
+        #         "rvccharacter_pitch": 0,
+        #         "narrator_enabled": 'false',
+        #         "narrator_voice_gen": "",
+        #         "rvcnarrator_voice_gen": "Disabled",
+        #         "rvcnarrator_pitch": 0,
+        #         "text_not_inside": "character",
+        #         "language": "en",
+        #         "output_file_name": f"tts_{message.id}",
+        #         "output_file_timestamp": False,
+        #         "autoplay": False,
+        #         "autoplay_volume": 0.5,
+        #         "speed": 1.0,
+        #         "pitch": 1,
+        #         "temperature": 1.0,
+        #         "repetition_penalty": 9.0
+        #     }
+        #     print(f"Worker: Sending TTS request to AllTalk with payload: {payload}")
+        #     resp = requests.post(config.ALLTALK_TTS_URL, data=payload, timeout=30)
+        #     print(f"Worker: AllTalk response status: {resp.status_code}")
+        #     if resp.status_code != 200:
+        #         await message.channel.send(f"TTS server error: {resp.text[:100]}")
+        #         print(f"Worker: TTS server error: {resp.text}")
+        #         continue
+
+        # # 2. Parse the JSON for the output_file_url
+        #     result = resp.json()
+        #     # Use the URL from config, not a hardcoded one
+        #     wav_url = f"{config.ALLTALK_API_URL}{result['output_file_url']}"
+        #     print(f"Worker: Downloading generated audio from {wav_url}")
+
+        # # 3. Download the actual WAV
+        #     wav_resp = requests.get(wav_url)
+        #     wav_path = f"tts_{message.id}.wav"
+        #     with open(wav_path, "wb") as f:
+        #         f.write(wav_resp.content)
+        #     print(f"Worker: Audio saved to {wav_path}")
+        # except Exception as e:
+        #  await message.channel.send(f"Failed to fetch TTS: {e}")
+        #  print(f"Worker: Exception during TTS fetch: {e}")
+        #  continue
 
         # Play audio in VC
         try:
