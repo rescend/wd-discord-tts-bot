@@ -1,0 +1,18 @@
+version: "3.8"
+
+services:
+  wd-tts-bot:
+    build: .
+    container_name: wd-tts-bot
+    restart: unless-stopped
+    volumes:
+      - ./config.py:/app/config.py:ro  # Read-only config
+      - ./voices:/app/voices  # Optional: for AllTalk custom voices
+    environment:
+      # Optional: Use environment variables instead of config.py
+      # - DISCORD_TOKEN=your_token_here
+      # - GEMINI_API_KEY=your_key_here
+      # - TTS_CHANNEL_NAME=tts-channel
+      # - ALLTALK_URL=http://your-alltalk-url:7851
+    working_dir: /app
+    command: ["python", "main.py"]
