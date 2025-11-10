@@ -1,10 +1,10 @@
 
-# WD Discord TTS Bot v0.4 🔊🎙️
+# WD Discord TTS Bot v0.4.1 🔊🎙️
 
 A powerful Discord Text-to-Speech bot built with ❤️ by the Wanton Destruction crew.  
 Features **dual TTS engine support** with Google Gemini 2.5 Flash TTS and AllTalk TTS, allowing seamless switching between AI-powered and local voice synthesis.
 
-**Latest Update (v0.4)**: Enhanced voice connection stability with comprehensive fixes for WebSocket errors and connection failures based on Discord.py 2.4.0+ best practices.
+**Latest Update (v0.4.1)**: Fixed persistent 4006 voice connection errors by upgrading to Discord.py 2.6.4+ with voice protocol v8 support. Resolved region-specific connection failures (Singapore, US East, US West).
 
 ---
 
@@ -415,14 +415,33 @@ For more detailed debugging, the bot now includes comprehensive error tracking:
 
 ## 📝 Changelog
 
+### **v0.4.1** (November 2025) - Voice Protocol v8 Upgrade
+**Critical Fix for Persistent 4006 Errors**
+
+**Major Fix:**
+- ✅ **RESOLVED**: Persistent WebSocket 4006 errors during voice handshake
+- ✅ Upgraded Discord.py from 2.4.0 → 2.6.4 (includes voice protocol v8)
+- ✅ Updated PyNaCl to 1.6.0 for new AEAD encryption support
+- ✅ Fixed region-specific failures (Singapore, US East, US West, Rotterdam)
+
+**Root Cause:**
+- Discord changed voice protocol from v7 to v8 in mid-2024
+- Old library versions incompatible with new dynamic port discovery
+- PR #10210 (merged June 30, 2024) fixed protocol upgrade in discord.py 2.5.3+
+
+**Impact:**
+This was a **library compatibility issue**, not a code issue. The connection retry logic in v0.4 was already correct - it just needed the updated library to work properly.
+
+---
+
 ### **v0.4** (November 2025) - Connection Stability Overhaul
 **Based on Discord.py 2.4.0+ Documentation Research**
 
 **Major Fixes:**
-- ✅ Resolved WebSocket 4006 "Session no longer valid" errors
+- ✅ Enhanced connection retry logic and error handling
 - ✅ Fixed "unclosed connection" warnings and resource leaks
 - ✅ Eliminated "bot joins but doesn't speak" issues
-- ✅ Upgraded to Discord.py 2.4.0 for latest voice improvements
+- ⚠️ Note: 4006 errors persisted until v0.4.1 library upgrade
 
 **Connection Improvements:**
 - Enhanced retry logic with exponential backoff (5s → 10s → 15s)
