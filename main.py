@@ -402,13 +402,6 @@ async def tts_worker(bot):
                 bot.queue.task_done()
                 continue
             
-            # Double-check the websocket is actually open
-            if hasattr(voice_client, 'ws') and voice_client.ws and not voice_client.ws.open:
-                print("Worker: Voice websocket is closed, connection not stable")
-                await message.channel.send("⚠️ Voice connection unstable. Please try again.")
-                bot.queue.task_done()
-                continue
-            
             # Wait a moment to ensure connection is stable after connecting
             await asyncio.sleep(1.0)
             
