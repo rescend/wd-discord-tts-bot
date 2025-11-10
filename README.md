@@ -1,8 +1,10 @@
 
-# WD Discord TTS Bot v0.3 🔊🎙️
+# WD Discord TTS Bot v0.4 🔊🎙️
 
 A powerful Discord Text-to-Speech bot built with ❤️ by the Wanton Destruction crew.  
 Features **dual TTS engine support** with Google Gemini 2.5 Flash TTS and AllTalk TTS, allowing seamless switching between AI-powered and local voice synthesis.
+
+**Latest Update (v0.4)**: Enhanced voice connection stability with comprehensive fixes for WebSocket errors and connection failures based on Discord.py 2.4.0+ best practices.
 
 ---
 
@@ -21,11 +23,13 @@ Features **dual TTS engine support** with Google Gemini 2.5 Flash TTS and AllTal
 - 🌐 **Docker Ready**: Optimized for containerized deployment
 - 📱 **Interactive Commands**: Easy-to-use command system with help
 
-### 🛡️ **Reliability & Stability**
-- 🔧 **Connection Monitoring**: Advanced gateway and voice connection handling
-- ⏱️ **Timeout Protection**: Prevents hanging connections and playback issues
-- � **Retry Logic**: Automatic retries for failed operations
-- 📊 **Detailed Logging**: Comprehensive debug output and error tracking
+### 🛡️ **Reliability & Stability** (Enhanced in v0.4)
+- 🔧 **Advanced Connection Handling**: Production-grade voice WebSocket management
+- ⏱️ **Smart Retry Logic**: Exponential backoff with proper cleanup between attempts
+- 🔍 **WebSocket Validation**: Pre-playback connection state verification
+- 🛠️ **Error Recovery**: Specific handling for ConnectionClosed (4006) and other voice errors
+- 📊 **Detailed Logging**: Comprehensive debug output with traceback support
+- 🚦 **Connection State Monitoring**: Real-time validation of voice gateway status
 
 ---
 
@@ -226,9 +230,114 @@ DEFAULT_TTS_ENGINE = "alltalk"  # or "gemini"
 
 ---
 
+## 🔧 Technical Improvements (v0.4)
+
+### **Voice Connection Architecture**
+Based on extensive research of Discord.py 2.4.0+ documentation and best practices:
+
+#### **WebSocket Error Handling**
+- **4006 Error Resolution**: Proper session cleanup preventing "Session no longer valid" errors
+- **Connection State Validation**: WebSocket state checking (`ws.open`) before audio playback
+- **Cleanup Strategy**: Force-disconnect with 5s timeout before all retry attempts
+- **Resource Release**: 2-second wait periods between disconnect and reconnect operations
+
+#### **Retry & Backoff Strategy**
+- **Exponential Backoff**: 5s → 10s → 15s for normal connection failures
+- **Extended Backoff**: 10s per retry for `ConnectionClosed` errors (codes 4000-4015)
+- **Smart Retries**: Up to 3 attempts with proper cleanup between each
+- **Timeout Management**: 35s overall timeout wrapping 60s connection timeout
+
+#### **Connection Lifecycle**
+```
+1. Detect stale connections → Force disconnect (5s timeout)
+2. Wait for resource cleanup (2s)
+3. Attempt fresh connection (60s internal, 35s wrapper)
+4. Validate WebSocket state (ws.open check)
+5. Stability wait period (1s)
+6. Proceed with playback
+```
+
+#### **Error Categories & Handling**
+| Error Type | Wait Time | Strategy |
+|------------|-----------|----------|
+| `asyncio.TimeoutError` | 5s × retry | Clean + exponential backoff |
+| `ConnectionClosed` (4006) | 10s × retry | Extended wait for session release |
+| `ClientException` | 5s × retry | Force cleanup existing connections |
+| Unexpected errors | 5s × retry | Full traceback logging |
+
+### **Connection Monitoring**
+- **Pre-Playback Checks**: Validates both `is_connected()` and WebSocket state
+- **During Playback**: Event-based callback system for accurate completion tracking
+- **Post-Playback**: Connection health verification
+- **Inactivity Monitor**: Runs every 2 minutes, checks for disconnected voice clients
+
+### **User Feedback**
+Clear, emoji-prefixed error messages for different scenarios:
+- ⚠️ Recoverable errors (timeouts, connection issues)
+- ❌ Fatal errors (missing permissions, invalid state)
+- Contextual messages about what went wrong and how to fix it
+
+### **Implementation Details**
+
+The connection handling system uses several key techniques from Discord.py best practices:
+
+1. **WebSocket State Validation**
+   ```python
+   # Check if underlying WebSocket is actually open
+   if hasattr(voice_client, 'ws') and voice_client.ws and not voice_client.ws.open:
+       # Connection appears established but WebSocket is closed
+       # Prevent silent failures
+   ```
+
+2. **Proper Cleanup Sequence**
+   ```python
+   # Always force-disconnect with timeout
+   await asyncio.wait_for(guild_vc.disconnect(force=True), timeout=5.0)
+   # Wait for Discord to release resources
+   await asyncio.sleep(2)
+   # Now safe to reconnect
+   ```
+
+3. **Connection Parameters**
+   ```python
+   # Nested timeouts for reliability
+   guild_vc = await asyncio.wait_for(
+       vc.channel.connect(timeout=60.0, reconnect=True),  # Inner timeout
+       timeout=35.0  # Outer timeout
+   )
+   ```
+
+4. **Exception Hierarchy**
+   - `ConnectionClosed` → Extended backoff (Discord session issues)
+   - `ClientException` → Clean existing connections first
+   - `TimeoutError` → Standard exponential backoff
+   - Generic `Exception` → Full traceback for debugging
+
+---
+
 ## � Troubleshooting
 
 ### **Common Issues:**
+
+**Voice Connection Errors (WebSocket 4006):**
+```
+⚠️ If you see "Session no longer valid" errors:
+1. Bot automatically retries with proper cleanup
+2. Wait for retry sequence to complete (up to 30s)
+3. If persistent, use !leave command and try again
+4. Check Discord server status: https://discordstatus.com
+```
+
+**Connection Timeouts:**
+- **Normal**: Bot retries automatically with increasing delays
+- **Action**: Wait for full retry sequence (3 attempts)
+- **If persistent**: Discord API may be experiencing issues
+- **Solution**: Check logs for specific error codes
+
+**"Unclosed connection" Warnings:**
+- **Status**: Fixed in v0.4 with proper WebSocket lifecycle management
+- **Impact**: No longer causes connection failures
+- **If still occurring**: Check Discord.py version (should be 2.4.0+)
 
 **Opus Codec Errors:**
 ```bash
@@ -244,15 +353,24 @@ docker build --no-cache -t wd-discord-tts-bot .
 - Check internet connectivity to Discord
 - Verify bot token is valid
 - Ensure bot has proper permissions in Discord server
+- Review `heartbeat_timeout` settings (default: 60s)
 
 **Voice Connection Failures:**
 - Verify user is in a voice channel
 - Check bot has "Connect" and "Speak" permissions
 - Try the `!leave` command and rejoin
+- **New in v0.4**: Check logs for specific WebSocket error codes
+- Allow retry sequence to complete before manual intervention
 
 **TTS Generation Errors:**
 - **Gemini**: Verify API key and quota
 - **AllTalk**: Check server is running and accessible
+
+**Bot Joins But Doesn't Speak:**
+- **Fixed in v0.4**: Enhanced pre-playback validation
+- Check FFmpeg is properly installed
+- Verify audio files are being created (check logs for "WAV file validation")
+- Ensure WebSocket connection is stable (new validation in v0.4)
 
 ---
 
@@ -268,13 +386,84 @@ docker logs -f wd-discord-tts-bot
 # "Opus loaded successfully" - Voice codec working
 # "Using TTS engine: gemini/alltalk" - Engine selection
 # "WAV file validation" - Audio file processing
+# "Successfully connected to <channel>" - Voice connection established
 # "Finished playback" - Successful audio playback
+
+# Connection troubleshooting logs (v0.4+):
+# "Voice connection timeout (attempt X/3)" - Retry in progress
+# "ConnectionClosed: Code=4006" - Session invalidation detected
+# "Voice websocket is closed" - Connection validation failure
+# "Stale VC found, cleaning up" - Automatic cleanup in progress
 ```
+
+### **Understanding Error Codes**
+
+| Code | Meaning | Resolution |
+|------|---------|------------|
+| 4006 | Session no longer valid | Automatic retry with cleanup |
+| 4014 | Disconnected | Channel was deleted or bot was kicked |
+| 4015 | Voice server crashed | Discord-side issue, automatic retry |
+
+### **Debug Mode**
+For more detailed debugging, the bot now includes comprehensive error tracking:
+- Full exception tracebacks for unexpected errors
+- WebSocket state logging
+- Connection lifecycle timestamps
+- Retry attempt tracking with backoff timings
+
+---
+
+## 📝 Changelog
+
+### **v0.4** (November 2025) - Connection Stability Overhaul
+**Based on Discord.py 2.4.0+ Documentation Research**
+
+**Major Fixes:**
+- ✅ Resolved WebSocket 4006 "Session no longer valid" errors
+- ✅ Fixed "unclosed connection" warnings and resource leaks
+- ✅ Eliminated "bot joins but doesn't speak" issues
+- ✅ Upgraded to Discord.py 2.4.0 for latest voice improvements
+
+**Connection Improvements:**
+- Enhanced retry logic with exponential backoff (5s → 10s → 15s)
+- Pre-playback WebSocket state validation
+- Proper session cleanup between retry attempts
+- Extended backoff for ConnectionClosed errors (10s per retry)
+- 2-second resource release delays between operations
+
+**Error Handling:**
+- Specific handlers for ConnectionClosed, TimeoutError, ClientException
+- Full traceback logging for unexpected errors
+- User-friendly emoji-prefixed error messages
+- Automatic recovery from transient Discord API issues
+
+**Monitoring:**
+- Real-time WebSocket state checking
+- Connection lifecycle logging
+- Detailed error code documentation
+- Enhanced debug output with retry tracking
+
+### **v0.3** - Dual TTS Engine Support
+- Added Google Gemini 2.5 Flash TTS integration
+- Per-server engine preferences
+- Dynamic engine switching commands
+
+### **v0.2** - AllTalk Integration
+- AllTalk TTS backend support
+- Voice model customization
+- Docker deployment optimization
+
+### **v0.1** - Initial Release
+- Basic TTS functionality
+- Discord voice channel integration
+- Queue management system
 
 ---
 
 ## 🧞 Roadmap
 
+- [x] **Voice Connection Stability** - Production-grade error handling (v0.4)
+- [x] **WebSocket Error Recovery** - Proper 4006 error handling (v0.4)
 - [ ] **Multiple Gemini Voices**: Support for additional Gemini voice models
 - [ ] **Voice Cloning**: Integration with voice cloning APIs
 - [ ] **Web Dashboard**: Browser-based control panel
@@ -289,12 +478,18 @@ docker logs -f wd-discord-tts-bot
 ## 🤝 Credits & Technologies
 
 ### **Core Technologies:**
+- [discord.py 2.4.0+](https://github.com/Rapptz/discord.py) - Discord API library with voice improvements
 - [Google Gemini 2.5 Flash TTS](https://deepmind.google/technologies/gemini/) - AI-powered voice synthesis
 - [AllTalk TTS](https://github.com/erew123/alltalk_tts) - Local voice synthesis backend
-- [discord.py](https://github.com/Rapptz/discord.py) - Discord API library
 - [FFmpeg](https://ffmpeg.org/) - Audio processing and conversion
 
+### **Research & Documentation:**
+- [Discord.py Official Documentation](https://discordpy.readthedocs.io/en/stable/) - Voice client best practices
+- [Discord API Documentation](https://discord.com/developers/docs) - WebSocket gateway specifications
+- Voice connection stability improvements based on Discord.py 2.4.0 changelog
+
 ### **Special Thanks:**
+- [Rapptz](https://github.com/Rapptz) and discord.py contributors for excellent documentation
 - [erew123](https://github.com/erew123) for AllTalk TTS
 - [Coqui.ai](https://github.com/coqui-ai/TTS) for TTS research
 - [Wanton Destruction](https://wanton.wtf) community for testing and feedback

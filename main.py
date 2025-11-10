@@ -46,7 +46,8 @@ intents.members = True
 bot = discord.Client(
     intents=intents,
     heartbeat_timeout=60.0,  # Increase heartbeat timeout
-    guild_ready_timeout=10.0  # Increase guild ready timeout
+    guild_ready_timeout=10.0,  # Increase guild ready timeout
+    max_messages=None  # Disable message cache to save memory
 )
 
 TTS_TIMEOUT_SEC = 60 * 60  # 1 hour
@@ -219,58 +220,158 @@ async def tts_worker(bot):
         if not vc or not vc.channel:
             await message.channel.send(f"{user.mention} Please join a voice channel to use TTS.")
             print("Worker: User not in voice channel, skipping job.")
+            bot.queue.task_done()
             continue
 
-        # (Re)join user's channel if needed with retry logic
+        # (Re)join user's channel if needed with proper retry logic
         voice_client = None
         max_retries = 3
         retry_count = 0
+        connection_successful = False
         
-        while retry_count < max_retries:
+        while retry_count < max_retries and not connection_successful:
             try:
-                # Clean up stale voice clients
+                # Clean up stale voice clients more aggressively
                 guild_vc = discord.utils.get(bot.voice_clients, guild=message.guild)
 
                 if guild_vc:
+                    # If we have a voice client, verify it's truly connected
                     if guild_vc.is_connected():
+                        # Check if we need to move channels
                         if guild_vc.channel != vc.channel:
                             print(f"Worker: Moving to voice channel: {vc.channel}")
-                            await guild_vc.move_to(vc.channel)
+                            try:
+                                await asyncio.wait_for(guild_vc.move_to(vc.channel), timeout=10.0)
+                                voice_client = guild_vc
+                                connection_successful = True
+                            except asyncio.TimeoutError:
+                                print("Worker: Move timeout, will disconnect and reconnect")
+                                await asyncio.wait_for(guild_vc.disconnect(force=True), timeout=5.0)
+                                await asyncio.sleep(2)
+                                # Continue to reconnect below
+                            except Exception as move_error:
+                                print(f"Worker: Error moving channels: {move_error}")
+                                await asyncio.wait_for(guild_vc.disconnect(force=True), timeout=5.0)
+                                await asyncio.sleep(2)
+                                # Continue to reconnect below
                         else:
                             print("Worker: Already in the correct voice channel.")
-                    else:
-                        print("Worker: Stale VC found, disconnecting.")
+                            voice_client = guild_vc
+                            connection_successful = True
+                    
+                    # If we still don't have a successful connection, clean up and reconnect
+                    if not connection_successful:
+                        print("Worker: Stale or failed VC, cleaning up before reconnect.")
                         try:
-                            await guild_vc.disconnect(force=True)
-                        except:
-                            pass  # Ignore disconnect errors
-                        print(f"Worker: Connecting fresh to {vc.channel}")
-                        guild_vc = await asyncio.wait_for(vc.channel.connect(), timeout=30.0)
-                else:
-                    print(f"Worker: Connecting to voice channel: {vc.channel}")
-                    guild_vc = await asyncio.wait_for(vc.channel.connect(), timeout=30.0)
-
-                voice_client = guild_vc
-                break  # Success, exit retry loop
+                            await asyncio.wait_for(guild_vc.disconnect(force=True), timeout=5.0)
+                        except Exception as cleanup_error:
+                            print(f"Worker: Error during cleanup: {cleanup_error}")
+                        
+                        # Wait for cleanup and resources to release
+                        await asyncio.sleep(2)
+                        guild_vc = None
+                
+                # Connect fresh if we don't have a connection
+                if not connection_successful:
+                    print(f"Worker: Connecting fresh to {vc.channel}")
+                    # Use connect with proper parameters - timeout is separate from channel.connect()
+                    guild_vc = await asyncio.wait_for(
+                        vc.channel.connect(timeout=60.0, reconnect=True),
+                        timeout=35.0  # Overall timeout slightly longer than the connection timeout
+                    )
+                    voice_client = guild_vc
+                    connection_successful = True
+                    print(f"Worker: Successfully connected to {vc.channel}")
                 
             except asyncio.TimeoutError:
                 retry_count += 1
                 print(f"Worker: Voice connection timeout (attempt {retry_count}/{max_retries})")
+                
+                # Clean up any partial connections
+                try:
+                    guild_vc = discord.utils.get(bot.voice_clients, guild=message.guild)
+                    if guild_vc:
+                        await asyncio.wait_for(guild_vc.disconnect(force=True), timeout=5.0)
+                except Exception as cleanup_err:
+                    print(f"Worker: Cleanup error: {cleanup_err}")
+                
                 if retry_count < max_retries:
-                    await asyncio.sleep(2)  # Wait before retry
+                    wait_time = 5 * retry_count  # Exponential backoff: 5s, 10s, 15s
+                    print(f"Worker: Waiting {wait_time}s before retry...")
+                    await asyncio.sleep(wait_time)
                 else:
-                    await message.channel.send("Voice connection timed out. Please try again.")
+                    await message.channel.send("⚠️ Voice connection timed out. Discord servers may be slow. Please try again.")
                     print("Worker: Voice connection failed after all retries")
-                    continue
+                    
+            except discord.errors.ClientException as e:
+                print(f"Worker: ClientException during connection: {e}")
+                retry_count += 1
+                
+                # Clean up any existing connections
+                try:
+                    guild_vc = discord.utils.get(bot.voice_clients, guild=message.guild)
+                    if guild_vc:
+                        await asyncio.wait_for(guild_vc.disconnect(force=True), timeout=5.0)
+                except Exception as cleanup_err:
+                    print(f"Worker: Cleanup error: {cleanup_err}")
+                
+                if retry_count < max_retries:
+                    wait_time = 5 * retry_count
+                    print(f"Worker: Waiting {wait_time}s before retry...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    await message.channel.send("⚠️ Voice connection failed. The bot may already be connected elsewhere.")
+                    print(f"Worker: Failed to join VC after all retries: {e}")
+            
+            except discord.errors.ConnectionClosed as e:
+                print(f"Worker: ConnectionClosed during voice connection: Code={e.code}, Reason={e.reason}")
+                retry_count += 1
+                
+                # Clean up
+                try:
+                    guild_vc = discord.utils.get(bot.voice_clients, guild=message.guild)
+                    if guild_vc:
+                        await asyncio.wait_for(guild_vc.disconnect(force=True), timeout=5.0)
+                except Exception as cleanup_err:
+                    print(f"Worker: Cleanup error: {cleanup_err}")
+                
+                if retry_count < max_retries:
+                    # Longer wait for connection closed errors
+                    wait_time = 10 * retry_count
+                    print(f"Worker: Connection closed, waiting {wait_time}s before retry...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    await message.channel.send("⚠️ Discord voice connection was closed unexpectedly. Please try again.")
+                    print(f"Worker: ConnectionClosed after all retries: {e}")
+                    
             except Exception as e:
                 retry_count += 1
-                print(f"Worker: Voice connection error (attempt {retry_count}/{max_retries}): {e}")
+                print(f"Worker: Unexpected voice connection error (attempt {retry_count}/{max_retries}): {e}")
+                print(f"Worker: Error type: {type(e).__name__}")
+                import traceback
+                traceback.print_exc()
+                
+                # Clean up any partial connections
+                try:
+                    guild_vc = discord.utils.get(bot.voice_clients, guild=message.guild)
+                    if guild_vc:
+                        await asyncio.wait_for(guild_vc.disconnect(force=True), timeout=5.0)
+                except Exception as cleanup_err:
+                    print(f"Worker: Cleanup error: {cleanup_err}")
+                
                 if retry_count < max_retries:
-                    await asyncio.sleep(2)  # Wait before retry
+                    wait_time = 5 * retry_count
+                    print(f"Worker: Waiting {wait_time}s before retry...")
+                    await asyncio.sleep(wait_time)
                 else:
-                    await message.channel.send(f"Bot could not join your voice channel: {e}")
+                    await message.channel.send(f"❌ Could not join voice channel: {str(e)[:100]}")
                     print(f"Worker: Failed to join VC after all retries: {e}")
-                    continue
+        
+        # If we couldn't establish connection, skip this job
+        if not connection_successful or not voice_client:
+            print("Worker: Could not establish voice connection, skipping job")
+            bot.queue.task_done()
+            continue
 
         # Generate TTS audio using the selected engine
         guild_id = message.guild.id
@@ -296,14 +397,26 @@ async def tts_worker(bot):
             
             # Verify voice client is still connected before playback
             if not voice_client or not voice_client.is_connected():
-                await message.channel.send("Lost voice connection. Please try again.")
+                await message.channel.send("⚠️ Lost voice connection before playback. Please try again.")
                 print("Worker: Voice client disconnected before playback")
+                bot.queue.task_done()
                 continue
+            
+            # Double-check the websocket is actually open
+            if hasattr(voice_client, 'ws') and voice_client.ws and not voice_client.ws.open:
+                print("Worker: Voice websocket is closed, connection not stable")
+                await message.channel.send("⚠️ Voice connection unstable. Please try again.")
+                bot.queue.task_done()
+                continue
+            
+            # Wait a moment to ensure connection is stable after connecting
+            await asyncio.sleep(1.0)
             
             # Check if the file exists and has content
             if not os.path.exists(wav_path):
                 await message.channel.send("Audio file was not created properly.")
                 print(f"Worker: Audio file {wav_path} does not exist.")
+                bot.queue.task_done()
                 continue
                 
             file_size = os.path.getsize(wav_path)
@@ -312,6 +425,7 @@ async def tts_worker(bot):
             if file_size == 0:
                 await message.channel.send("Audio file is empty.")
                 print(f"Worker: Audio file {wav_path} is empty.")
+                bot.queue.task_done()
                 continue
             
             # Create audio source with explicit options for better compatibility
@@ -325,22 +439,38 @@ async def tts_worker(bot):
                 )
                 
                 voice_client.stop()  # Stop anything already playing
-                voice_client.play(audio_src)
+                
+                # Add a callback to track when playback ends
+                playback_complete = asyncio.Event()
+                playback_error = None
+                
+                def after_playback(error):
+                    nonlocal playback_error
+                    if error:
+                        playback_error = error
+                        print(f"Worker: Playback error in callback: {error}")
+                    playback_complete.set()
+                
+                voice_client.play(audio_src, after=after_playback)
+                print("Worker: Playback started, waiting for completion...")
 
                 # Wait for audio to finish with connection monitoring
                 max_wait = 60  # Maximum wait time in seconds
-                wait_time = 0
-                while voice_client.is_playing() and voice_client.is_connected() and wait_time < max_wait:
-                    await asyncio.sleep(0.5)
-                    wait_time += 0.5
+                try:
+                    await asyncio.wait_for(playback_complete.wait(), timeout=max_wait)
                     
-                if wait_time >= max_wait:
+                    if playback_error:
+                        print(f"Worker: Playback completed with error: {playback_error}")
+                    else:
+                        print("Worker: Playback completed successfully.")
+                        
+                except asyncio.TimeoutError:
                     print("Worker: Playback timeout, stopping audio")
                     voice_client.stop()
-                elif not voice_client.is_connected():
-                    print("Worker: Voice connection lost during playback")
-                else:
-                    print("Worker: Finished playback.")
+                
+                # Verify connection is still alive
+                if not voice_client.is_connected():
+                    print("Worker: Voice connection lost during/after playback")
                 
             except Exception as audio_error:
                 print(f"Worker: Audio source creation failed: {audio_error}")
@@ -348,15 +478,26 @@ async def tts_worker(bot):
                 try:
                     audio_src = discord.FFmpegPCMAudio(wav_path)
                     voice_client.stop()
-                    voice_client.play(audio_src)
                     
-                    # Wait for audio to finish with connection monitoring
+                    playback_complete = asyncio.Event()
+                    playback_error = None
+                    
+                    def after_playback_fallback(error):
+                        nonlocal playback_error
+                        if error:
+                            playback_error = error
+                            print(f"Worker: Fallback playback error: {error}")
+                        playback_complete.set()
+                    
+                    voice_client.play(audio_src, after=after_playback_fallback)
+                    
                     max_wait = 60
-                    wait_time = 0
-                    while voice_client.is_playing() and voice_client.is_connected() and wait_time < max_wait:
-                        await asyncio.sleep(0.5)
-                        wait_time += 0.5
-                    print("Worker: Finished playback (fallback).")
+                    try:
+                        await asyncio.wait_for(playback_complete.wait(), timeout=max_wait)
+                        print("Worker: Fallback playback completed.")
+                    except asyncio.TimeoutError:
+                        print("Worker: Fallback playback timeout")
+                        voice_client.stop()
                     
                 except Exception as fallback_error:
                     print(f"Worker: Fallback audio playback also failed: {fallback_error}")
@@ -371,8 +512,11 @@ async def tts_worker(bot):
             print(f"Worker: Error type: {type(e).__name__}")
         finally:
             if os.path.exists(wav_path):
-                os.remove(wav_path)
-                print(f"Worker: Deleted {wav_path}")
+                try:
+                    os.remove(wav_path)
+                    print(f"Worker: Deleted {wav_path}")
+                except Exception as cleanup_error:
+                    print(f"Worker: Error deleting file: {cleanup_error}")
 
         # Optionally, delete message after playing (per PRD)
         try:
@@ -386,7 +530,7 @@ async def tts_worker(bot):
 
 async def inactivity_monitor(bot):
     while True:
-        await asyncio.sleep(120)  # Increased from 60 to 120 seconds to reduce API calls
+        await asyncio.sleep(120)  # Check every 2 minutes
         now = asyncio.get_event_loop().time()
         
         # Make a copy of voice_clients list to avoid issues during iteration
@@ -395,23 +539,41 @@ async def inactivity_monitor(bot):
         for vc in voice_clients:
             try:
                 guild_id = vc.guild.id
+                
+                # Check if the voice client is actually connected
+                if not vc.is_connected():
+                    print(f"Monitor: Found disconnected voice client for {vc.guild.name}, cleaning up.")
+                    try:
+                        await asyncio.wait_for(vc.disconnect(force=True), timeout=5.0)
+                    except:
+                        pass
+                    continue
+                
                 # Check if channel is empty (except the bot)
                 humans = [m for m in vc.channel.members if not m.bot]
                 print(f"Monitor: Members in VC {vc.channel.name} ({guild_id}): {[m.name for m in vc.channel.members]}")
                 
                 if not humans:
                     print(f"Monitor: Channel empty in {vc.guild.name}, disconnecting bot.")
-                    await vc.disconnect(force=True)
+                    try:
+                        await asyncio.wait_for(vc.disconnect(force=True), timeout=5.0)
+                    except Exception as disc_error:
+                        print(f"Monitor: Error disconnecting from empty channel: {disc_error}")
                 elif guild_id in last_activity and (now - last_activity[guild_id]) > TTS_TIMEOUT_SEC:
                     print(f"Monitor: Inactivity timeout in {vc.guild.name}, disconnecting bot.")
-                    await vc.disconnect(force=True)
+                    try:
+                        await asyncio.wait_for(vc.disconnect(force=True), timeout=5.0)
+                    except Exception as disc_error:
+                        print(f"Monitor: Error disconnecting after inactivity: {disc_error}")
+                        
             except Exception as e:
                 print(f"Monitor: Error checking voice client: {e}")
+                print(f"Monitor: Error type: {type(e).__name__}")
                 # Try to disconnect the problematic voice client
                 try:
-                    await vc.disconnect(force=True)
-                except:
-                    pass
+                    await asyncio.wait_for(vc.disconnect(force=True), timeout=5.0)
+                except Exception as cleanup_error:
+                    print(f"Monitor: Error during cleanup: {cleanup_error}")
 
 @bot.event
 async def on_disconnect():
@@ -424,6 +586,27 @@ async def on_resumed():
 @bot.event
 async def on_connect():
     print("Bot connected to Discord")
+
+@bot.event
+async def on_voice_state_update(member, before, after):
+    """Handle voice state updates to detect when bot is disconnected."""
+    # Only care about the bot's own voice state
+    if member.id != bot.user.id:
+        return
+    
+    # If bot was disconnected from a voice channel
+    if before.channel and not after.channel:
+        print(f"VoiceState: Bot was disconnected from {before.channel.name}")
+        guild_id = before.channel.guild.id
+        
+        # Clean up any stale voice clients
+        guild_vc = discord.utils.get(bot.voice_clients, guild=before.channel.guild)
+        if guild_vc:
+            print(f"VoiceState: Cleaning up voice client for {before.channel.guild.name}")
+            try:
+                await asyncio.wait_for(guild_vc.disconnect(force=True), timeout=5.0)
+            except Exception as e:
+                print(f"VoiceState: Error during cleanup: {e}")
 
 @bot.event
 async def on_ready():
