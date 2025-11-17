@@ -4,10 +4,9 @@ import asyncio
 import json
 import os
 import wave
-from google import genai
-from google.genai import types
+import aiohttp
 
-import config  # This should contain your DISCORD_BOT_TOKEN, TTS_CHANNEL_ID, and COQUI_TTS_URL
+import config  # This should contain your DISCORD_BOT_TOKEN, TTS_CHANNEL_ID, and KOKORO_BASE_URL
 
 # Load Opus codec for voice support
 try:
@@ -53,99 +52,67 @@ bot = discord.Client(
 TTS_TIMEOUT_SEC = 60 * 60  # 1 hour
 
 # TTS Engine selection - per guild
-current_tts_engine = {}  # guild_id -> "gemini" or "alltalk"
-DEFAULT_TTS_ENGINE = "gemini"  # Default to Gemini
+current_tts_engine = {}  # guild_id -> "kokoro" or "alltalk"
+DEFAULT_TTS_ENGINE = "kokoro"  # Default to Kokoro
 
 # The queue will be created in the setup_hook to ensure it's on the right event loop.
 # We will attach it to the bot instance to avoid using globals.
 # queue = asyncio.Queue() 
 last_activity = {} # Per-guild cache of last activity time
 
-def save_pcm_as_wav(pcm_data, filename, channels=1, sample_rate=24000, sample_width=2):
-    """Convert raw PCM data to WAV format and save to file."""
-    with wave.open(filename, "wb") as wf:
-        wf.setnchannels(channels)
-        wf.setsampwidth(sample_width)
-        wf.setframerate(sample_rate)
-        wf.writeframes(pcm_data)
 
-def validate_wav_file(filepath):
-    """Validate WAV file and return its properties."""
-    try:
-        with wave.open(filepath, 'rb') as wf:
-            channels = wf.getnchannels()
-            sample_width = wf.getsampwidth()
-            framerate = wf.getframerate()
-            frames = wf.getnframes()
-            duration = frames / framerate
-            
-            print(f"WAV file validation - Channels: {channels}, Sample width: {sample_width}, "
-                  f"Frame rate: {framerate}, Frames: {frames}, Duration: {duration:.2f}s")
-            return True, {
-                'channels': channels,
-                'sample_width': sample_width,
-                'framerate': framerate,
-                'frames': frames,
-                'duration': duration
-            }
-    except Exception as e:
-        print(f"WAV file validation failed: {e}")
-        return False, str(e)
 
-async def generate_gemini_tts(text, message):
-    """Generate TTS using Gemini API."""
+async def generate_kokoro_tts(text, message):
+    """Generate TTS using Kokoro-FastAPI (OpenAI-compatible endpoint)."""
     try:
-        print("Worker: Using Gemini TTS")
-        if not hasattr(config, 'GEMINI_API_KEY') or not config.GEMINI_API_KEY:
-            await message.channel.send("Gemini API key is not configured.")
-            print("Worker: GEMINI_API_KEY not found in config.")
+        print("Worker: Using Kokoro TTS")
+        if not hasattr(config, 'KOKORO_BASE_URL') or not config.KOKORO_BASE_URL:
+            await message.channel.send("Kokoro TTS URL is not configured.")
+            print("Worker: KOKORO_BASE_URL not found in config.")
             return None
         
-        # Initialize the Gemini client
-        client = genai.Client(api_key=config.GEMINI_API_KEY)
+        payload = {
+            "model": "kokoro",
+            "input": text,
+            "voice": getattr(config, 'KOKORO_DEFAULT_VOICE', 'af_heart'),
+            "response_format": getattr(config, 'KOKORO_RESPONSE_FORMAT', 'mp3'),
+            "speed": getattr(config, 'KOKORO_SPEED', 1.0)
+        }
         
-        print(f"Worker: Sending TTS request to Gemini for text: '{text}'")
+        print(f"Worker: Sending TTS request to Kokoro for text: '{text}'")
         
-        # Define a style prompt to control the speech output
-        style_prompt = "Speak in a warm, mature, and reassuring tone—like a gentle big sister or caring mentor. Your voice should sound confident, calm, and inviting, depending on context it can be very slightly flirty. Speak at a normal, conversational pace.: "
-        full_text = f"{style_prompt}{text}"
-
-        # Generate the audio using the correct API structure
-        response = client.models.generate_content(
-            model="gemini-2.5-flash-preview-tts",
-            contents=full_text,
-            config={
-                "response_modalities": ["AUDIO"],
-                "speech_config": {
-                    "voice_config": {
-                        "prebuilt_voice_config": {
-                            "voice_name": "Gacrux"
-                        }
-                    }
-                }
-            }
-        )
-
-        # Extract the audio data from the response
-        audio_data = response.candidates[0].content.parts[0].inline_data.data
-
-        # Save the audio file as proper WAV format
-        wav_path = f"tts_{message.id}.wav"
-        save_pcm_as_wav(audio_data, wav_path)
-        print(f"Worker: Gemini audio saved to {wav_path}")
+        timeout = aiohttp.ClientTimeout(total=getattr(config, 'KOKORO_TTS_TIMEOUT_MS', 8000) / 1000)
         
-        # Validate the WAV file
-        is_valid, wav_info = validate_wav_file(wav_path)
-        if not is_valid:
-            await message.channel.send(f"Generated audio file is invalid: {wav_info}")
-            print(f"Worker: WAV validation failed: {wav_info}")
-            return None
-            
-        return wav_path
-
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                f"{config.KOKORO_BASE_URL}/audio/speech",
+                json=payload
+            ) as resp:
+                if resp.status != 200:
+                    error_text = await resp.text()
+                    await message.channel.send(f"Kokoro TTS error: {error_text[:100]}")
+                    print(f"Worker: Kokoro error {resp.status}: {error_text}")
+                    return None
+                
+                audio_data = await resp.read()
+        
+        # Save audio file
+        file_ext = getattr(config, 'KOKORO_RESPONSE_FORMAT', 'mp3')
+        audio_path = f"tts_{message.id}.{file_ext}"
+        
+        with open(audio_path, "wb") as f:
+            f.write(audio_data)
+        
+        print(f"Worker: Kokoro audio saved to {audio_path} ({len(audio_data)} bytes)")
+        return audio_path
+        
+    except asyncio.TimeoutError:
+        await message.channel.send("⚠️ Kokoro TTS timeout. Trying fallback...")
+        print("Worker: Kokoro TTS timeout")
+        return None
     except Exception as e:
-        await message.channel.send(f"Failed to fetch TTS from Gemini: {e}")
-        print(f"Worker: Exception during Gemini TTS fetch: {e}")
+        await message.channel.send(f"Kokoro TTS error: {e}")
+        print(f"Worker: Exception during Kokoro TTS: {e}")
         return None
 
 async def generate_alltalk_tts(text, message):
@@ -378,17 +345,24 @@ async def tts_worker(bot):
         engine = current_tts_engine.get(guild_id, DEFAULT_TTS_ENGINE)
         print(f"Worker: Using TTS engine: {engine}")
         
-        if engine == "gemini":
-            wav_path = await generate_gemini_tts(text, message)
+        wav_path = None
+        if engine == "kokoro":
+            wav_path = await generate_kokoro_tts(text, message)
+            # Fallback to alltalk if kokoro fails
+            if wav_path is None and hasattr(config, 'ALLTALK_TTS_URL'):
+                print("Worker: Kokoro failed, falling back to AllTalk")
+                wav_path = await generate_alltalk_tts(text, message)
         elif engine == "alltalk":
             wav_path = await generate_alltalk_tts(text, message)
         else:
             await message.channel.send(f"Unknown TTS engine: {engine}")
             print(f"Worker: Unknown TTS engine: {engine}")
+            bot.queue.task_done()
             continue
             
         if wav_path is None:
             print("Worker: TTS generation failed, skipping playback")
+            bot.queue.task_done()
             continue
 
         # Play audio in VC with connection verification
@@ -605,7 +579,7 @@ async def on_voice_state_update(member, before, after):
 async def on_ready():
     print(f"Logged in as {bot.user}")
     print(f"Default TTS engine: {DEFAULT_TTS_ENGINE}")
-    print("Available commands: !gemini, !alltalk, !voice, !leave, !help")
+    print("Available commands: !kokoro, !alltalk, !voice, !leave, !help")
     # Background tasks are now started in setup_hook
     # bot.loop.create_task(tts_worker())
     # bot.loop.create_task(inactivity_monitor())
@@ -640,11 +614,11 @@ async def on_message(message):
             await message.channel.send("I'm not in a voice channel.")
         return
 
-    # Command to switch to Gemini TTS
-    if message.content.strip().lower() == '!gemini':
-        current_tts_engine[message.guild.id] = "gemini"
-        await message.channel.send("🔮 Switched to **Gemini TTS** (AI-powered voice)")
-        print(f"on_message: Switched to Gemini TTS in guild {message.guild.id}")
+    # Command to switch to Kokoro TTS
+    if message.content.strip().lower() == '!kokoro':
+        current_tts_engine[message.guild.id] = "kokoro"
+        await message.channel.send("🎙️ Switched to **Kokoro TTS** (Local AI voice)")
+        print(f"on_message: Switched to Kokoro TTS in guild {message.guild.id}")
         return
 
     # Command to switch to AllTalk TTS
@@ -657,10 +631,10 @@ async def on_message(message):
     # Command to check current voice engine
     if message.content.strip().lower() == '!voice':
         current_engine = current_tts_engine.get(message.guild.id, DEFAULT_TTS_ENGINE)
-        engine_name = "Gemini TTS (AI-powered)" if current_engine == "gemini" else "AllTalk TTS (Local synthesis)"
-        icon = "🔮" if current_engine == "gemini" else "🗣️"
+        engine_name = "Kokoro TTS (Local AI)" if current_engine == "kokoro" else "AllTalk TTS (Local synthesis)"
+        icon = "🎙️" if current_engine == "kokoro" else "🗣️"
         await message.channel.send(f"{icon} Current voice engine: **{engine_name}**\n"
-                                 f"Use `!gemini` or `!alltalk` to switch engines.")
+                                 f"Use `!kokoro` or `!alltalk` to switch engines.")
         print(f"on_message: Current voice engine query in guild {message.guild.id}: {current_engine}")
         return
 
@@ -668,7 +642,7 @@ async def on_message(message):
     if message.content.strip().lower() == '!help':
         help_text = """
 🤖 **TTS Bot Commands:**
-• `!gemini` - Switch to Gemini TTS (AI-powered voice)
+• `!kokoro` - Switch to Kokoro TTS (Local AI voice)
 • `!alltalk` - Switch to AllTalk TTS (Local synthesis)
 • `!voice` - Check current voice engine
 • `!leave` - Make bot leave voice channel
