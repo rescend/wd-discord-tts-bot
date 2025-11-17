@@ -1,18 +1,18 @@
 
-# WD Discord TTS Bot v0.4.1 🔊🎙️
+# WD Discord TTS Bot v0.5.0 🔊🎙️
 
 A powerful Discord Text-to-Speech bot built with ❤️ by the Wanton Destruction crew.  
-Features **dual TTS engine support** with Google Gemini 2.5 Flash TTS and AllTalk TTS, allowing seamless switching between AI-powered and local voice synthesis.
+Features **dual TTS engine support** with Kokoro-FastAPI (local GPU-powered AI) and AllTalk TTS, providing high-quality, low-latency voice synthesis without cloud dependencies.
 
-**Latest Update (v0.4.1)**: Fixed persistent 4006 voice connection errors by upgrading to Discord.py 2.6.4+ with voice protocol v8 support. Resolved region-specific connection failures (Singapore, US East, US West).
+**Latest Update (v0.5.0)**: Migrated from Gemini to Kokoro-FastAPI for local, GPU-accelerated TTS with the premium `af_heart` voice. Eliminates cloud dependencies, reduces latency, and provides consistent high-quality voice synthesis.
 
 ---
 
 ## ✨ Features
 
 ### 🎤 **Dual TTS Engine Support**
-- 🔮 **Gemini TTS**: AI-powered natural speech using Google's Gemini 2.5 Flash model
-- 🗣️ **AllTalk TTS**: Local voice synthesis with customizable models
+- 🎙️ **Kokoro TTS**: Local GPU-powered AI voice using Kokoro-FastAPI with premium `af_heart` voice
+- 🗣️ **AllTalk TTS**: Local voice synthesis with customizable models (fallback)
 - 🔄 **Dynamic Switching**: Change engines on-the-fly with simple commands
 - 🏢 **Per-Server Settings**: Each Discord server remembers its preferred engine
 
@@ -37,7 +37,7 @@ Features **dual TTS engine support** with Google Gemini 2.5 Flash TTS and AllTal
 
 | Command | Description |
 |---------|-------------|
-| `!gemini` | Switch to Gemini TTS (AI-powered voice) |
+| `!kokoro` | Switch to Kokoro TTS (Local AI voice) |
 | `!alltalk` | Switch to AllTalk TTS (Local synthesis) |
 | `!voice` | Check current voice engine |
 | `!leave` | Make bot leave voice channel |
@@ -52,8 +52,8 @@ Features **dual TTS engine support** with Google Gemini 2.5 Flash TTS and AllTal
 ### **Required:**
 - Docker or Python 3.9+
 - `ffmpeg` installed and accessible in `PATH`
-- Google Gemini API key (for Gemini TTS)
-- Running instance of `alltalk` (for AllTalk TTS - optional)
+- Running instance of Kokoro-FastAPI (for Kokoro TTS)
+- Optional: Running instance of AllTalk (for AllTalk TTS fallback)
 
 ### **Voice Codec:**
 - `libopus` (automatically installed in Docker)
@@ -75,9 +75,15 @@ Features **dual TTS engine support** with Google Gemini 2.5 Flash TTS and AllTal
    # config.py
    DISCORD_BOT_TOKEN = "your_discord_bot_token"
    TTS_CHANNEL_ID = 123456789012345678  # Your TTS channel ID
-   GEMINI_API_KEY = "your_gemini_api_key"
    
-   # Optional - for AllTalk TTS
+   # Kokoro TTS Settings (Primary)
+   KOKORO_BASE_URL = "http://your-kokoro-server:8880/v1"
+   KOKORO_DEFAULT_VOICE = "af_heart"
+   KOKORO_RESPONSE_FORMAT = "wav"
+   KOKORO_TTS_TIMEOUT_MS = 8000
+   KOKORO_SPEED = 1.0
+   
+   # Optional - for AllTalk TTS fallback
    ALLTALK_TTS_URL = "http://your-alltalk-server:7851/api/tts-generate"
    ALLTALK_API_URL = "http://your-alltalk-server:7851"
    ```
@@ -93,17 +99,35 @@ Features **dual TTS engine support** with Google Gemini 2.5 Flash TTS and AllTal
 
 ---
 
-## 🔮 Gemini TTS Setup
+## 🎙️ Kokoro TTS Setup
 
-1. **Get API Key:**
-   - Visit [Google AI Studio](https://aistudio.google.com/app/apikey)
-   - Create a new API key
-   - Add it to your `config.py` as `GEMINI_API_KEY`
+Kokoro-FastAPI provides local, GPU-accelerated TTS with high-quality voices.
+
+1. **Run Kokoro-FastAPI:**
+   ```bash
+   docker run -d \
+     --gpus all \
+     -p 8880:8880 \
+     --name kokoro-fastapi \
+     ghcr.io/remsky/kokoro-fastapi-gpu:latest
+   ```
 
 2. **Voice Configuration:**
-   - Default voice: `Gacrux` (warm, mature female voice)
-   - Style: Configured for warm, conversational tone
-   - Automatically converts 24kHz mono PCM to Discord-compatible WAV
+   - Default voice: `af_heart` (premium quality female voice)
+   - Supports multiple voices via the API
+   - WAV output format for optimal Discord compatibility
+   - Typically <1.5s latency for short texts on GPU
+
+3. **Test the API:**
+   ```bash
+   curl -X POST http://localhost:8880/v1/audio/speech \
+     -H "Content-Type: application/json" \
+     -d '{"model":"kokoro","input":"Hello world","voice":"af_heart","response_format":"wav"}'
+   ```
+
+4. **Resources:**
+   - [Kokoro-FastAPI GitHub](https://github.com/remsky/Kokoro-FastAPI)
+   - [API Documentation](http://localhost:8880/docs) (after running)
 
 ---
 
@@ -176,9 +200,15 @@ Create a `config.py` file with the following settings:
 # Required Settings
 DISCORD_BOT_TOKEN = "your_discord_bot_token_here"
 TTS_CHANNEL_ID = 123456789012345678  # Channel ID where TTS works
-GEMINI_API_KEY = "your_gemini_api_key_here"
 
-# Optional - AllTalk TTS Settings  
+# Kokoro TTS Settings (Primary)
+KOKORO_BASE_URL = "http://localhost:8880/v1"
+KOKORO_DEFAULT_VOICE = "af_heart"
+KOKORO_RESPONSE_FORMAT = "wav"
+KOKORO_TTS_TIMEOUT_MS = 8000
+KOKORO_SPEED = 1.0
+
+# Optional - AllTalk TTS Settings (Fallback)
 ALLTALK_TTS_URL = "http://localhost:7851/api/tts-generate"
 ALLTALK_API_URL = "http://localhost:7851"
 ```
@@ -188,7 +218,7 @@ You can also use environment variables instead of `config.py`:
 ```bash
 export DISCORD_BOT_TOKEN="your_token"
 export TTS_CHANNEL_ID="123456789012345678"
-export GEMINI_API_KEY="your_gemini_key"
+export KOKORO_BASE_URL="http://localhost:8880/v1"
 ```
 
 ---
@@ -225,7 +255,7 @@ services:
 ### **Voice Engine Defaults**
 To change the default TTS engine, modify `main.py`:
 ```python
-DEFAULT_TTS_ENGINE = "alltalk"  # or "gemini"
+DEFAULT_TTS_ENGINE = "kokoro"  # or "alltalk"
 ```
 
 ---
@@ -363,8 +393,9 @@ docker build --no-cache -t wd-discord-tts-bot .
 - Allow retry sequence to complete before manual intervention
 
 **TTS Generation Errors:**
-- **Gemini**: Verify API key and quota
+- **Kokoro**: Verify server is running at configured URL and has GPU access
 - **AllTalk**: Check server is running and accessible
+- **Audio format errors**: Ensure WAV format is configured (not MP3)
 
 **Bot Joins But Doesn't Speak:**
 - **Fixed in v0.4**: Enhanced pre-playback validation
@@ -384,10 +415,10 @@ docker logs -f wd-discord-tts-bot
 
 # Key log messages to watch for:
 # "Opus loaded successfully" - Voice codec working
-# "Using TTS engine: gemini/alltalk" - Engine selection
-# "WAV file validation" - Audio file processing
+# "Using TTS engine: kokoro/alltalk" - Engine selection
+# "Kokoro audio saved to..." - Audio file processing
 # "Successfully connected to <channel>" - Voice connection established
-# "Finished playback" - Successful audio playback
+# "Playback completed successfully" - Successful audio playback
 
 # Connection troubleshooting logs (v0.4+):
 # "Voice connection timeout (attempt X/3)" - Retry in progress
@@ -414,6 +445,35 @@ For more detailed debugging, the bot now includes comprehensive error tracking:
 ---
 
 ## 📝 Changelog
+
+### **v0.5.0** (November 2025) - Kokoro TTS Migration
+**Major Feature: Local GPU-Powered TTS**
+
+**Breaking Changes:**
+- ❌ **REMOVED**: Google Gemini TTS integration (cloud dependency eliminated)
+- ✅ **ADDED**: Kokoro-FastAPI integration (local GPU-powered TTS)
+- 🔄 **CHANGED**: Command `!gemini` → `!kokoro`
+- 📦 **REMOVED**: `google-genai` dependency
+
+**New Features:**
+- 🎙️ Kokoro TTS with premium `af_heart` voice as primary engine
+- 🚀 Sub-1.5s latency for local GPU inference
+- 🔄 Automatic fallback to AllTalk on Kokoro failure
+- 📉 50 lines of code removed (simpler codebase)
+- 🌐 Zero cloud dependencies for TTS
+
+**Configuration Changes:**
+- New `KOKORO_BASE_URL` setting (replaces `GEMINI_API_KEY`)
+- New `KOKORO_DEFAULT_VOICE`, `KOKORO_RESPONSE_FORMAT`, etc.
+- WAV format default for optimal Discord compatibility
+
+**Migration Guide:**
+1. Remove `GEMINI_API_KEY` from config
+2. Add Kokoro configuration settings
+3. Run Kokoro-FastAPI container with GPU support
+4. Update dependencies: `pip install -r requirements.txt`
+
+---
 
 ### **v0.4.1** (November 2025) - Voice Protocol v8 Upgrade
 **Critical Fix for Persistent 4006 Errors**
@@ -462,8 +522,8 @@ This was a **library compatibility issue**, not a code issue. The connection ret
 - Detailed error code documentation
 - Enhanced debug output with retry tracking
 
-### **v0.3** - Dual TTS Engine Support
-- Added Google Gemini 2.5 Flash TTS integration
+### **v0.3** - Dual TTS Engine Support (Deprecated)
+- Added Google Gemini 2.5 Flash TTS integration (removed in v0.5.0)
 - Per-server engine preferences
 - Dynamic engine switching commands
 
@@ -483,11 +543,12 @@ This was a **library compatibility issue**, not a code issue. The connection ret
 
 - [x] **Voice Connection Stability** - Production-grade error handling (v0.4)
 - [x] **WebSocket Error Recovery** - Proper 4006 error handling (v0.4)
-- [ ] **Multiple Gemini Voices**: Support for additional Gemini voice models
+- [x] **Local GPU-Powered TTS** - Kokoro-FastAPI integration (v0.5.0)
+- [ ] **Multiple Kokoro Voices**: Support for additional Kokoro voice models
 - [ ] **Voice Cloning**: Integration with voice cloning APIs
 - [ ] **Web Dashboard**: Browser-based control panel
 - [ ] **Role-based Access**: Permission system for voice engines
-- [ ] **Voice Emotion Control**: Mood and style modulation
+- [ ] **Voice Emotion Control**: Mood and style modulation via Kokoro parameters
 - [ ] **Multi-language Support**: International TTS engines
 - [ ] **Audio Effects**: Post-processing and filters
 - [ ] **Usage Analytics**: Voice usage statistics and insights
@@ -497,8 +558,8 @@ This was a **library compatibility issue**, not a code issue. The connection ret
 ## 🤝 Credits & Technologies
 
 ### **Core Technologies:**
-- [discord.py 2.4.0+](https://github.com/Rapptz/discord.py) - Discord API library with voice improvements
-- [Google Gemini 2.5 Flash TTS](https://deepmind.google/technologies/gemini/) - AI-powered voice synthesis
+- [discord.py 2.6.4+](https://github.com/Rapptz/discord.py) - Discord API library with voice improvements
+- [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI) - Local GPU-accelerated TTS
 - [AllTalk TTS](https://github.com/erew123/alltalk_tts) - Local voice synthesis backend
 - [FFmpeg](https://ffmpeg.org/) - Audio processing and conversion
 
@@ -509,8 +570,9 @@ This was a **library compatibility issue**, not a code issue. The connection ret
 
 ### **Special Thanks:**
 - [Rapptz](https://github.com/Rapptz) and discord.py contributors for excellent documentation
+- [remsky](https://github.com/remsky) for Kokoro-FastAPI wrapper
 - [erew123](https://github.com/erew123) for AllTalk TTS
-- [Coqui.ai](https://github.com/coqui-ai/TTS) for TTS research
+- [Kokoro-82M team](https://huggingface.co/hexgrad/Kokoro-82M) for the base TTS model
 - [Wanton Destruction](https://wanton.wtf) community for testing and feedback
 
 ---
@@ -520,6 +582,6 @@ This was a **library compatibility issue**, not a code issue. The connection ret
 MIT License - Do whatever you want, just don't be a dick about it.
 
 ### **Third-party Licenses:**
-- Gemini API usage subject to [Google AI Terms](https://ai.google.dev/terms)
+- Kokoro-FastAPI and Kokoro-82M follow their respective licensing terms
 - AllTalk TTS follows its respective licensing terms
 - Discord.py under MIT License
