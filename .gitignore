@@ -193,4 +193,6 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
->>>>>>> 53d56d6152657a08beaccde434cb27a04ab4be42
+
+# Claude Code
+.claude/
