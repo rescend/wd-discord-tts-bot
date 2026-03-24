@@ -212,8 +212,10 @@ async def tts_worker(bot):
                                 print(f"Worker: Error moving channels: {move_error}, will reconnect")
                                 try:
                                     await asyncio.wait_for(guild_vc.disconnect(force=True), timeout=5.0)
-                                except Exception:
-                                    pass
+                                except asyncio.CancelledError:
+                                    raise
+                                except Exception as disconnect_error:
+                                    print(f"Worker: Error during move cleanup disconnect: {disconnect_error}")
                                 await asyncio.sleep(2)
                         else:
                             print("Worker: Already in the correct voice channel.")
@@ -233,8 +235,8 @@ async def tts_worker(bot):
                     print(f"Worker: Connecting fresh to {vc.channel} (attempt {retry_count + 1}/{max_retries})")
                     # reconnect=False: let our retry loop handle failures, not discord.py internally.
                     # This prevents two competing retry loops and the timeout inversion bug where
-                    # the outer wait_for(35s) would fire during discord.py's own internal retries.
-                    # Outer timeout (70s) > inner timeout (60s) so the inner always expires first.
+                    # the outer wait_for(70s) could fire during discord.py's own internal retries.
+                    # Outer timeout (70s) > inner timeout (60s), so on timeout the inner is expected to fire first.
                     guild_vc = await asyncio.wait_for(
                         vc.channel.connect(timeout=60.0, reconnect=False, self_deaf=True),
                         timeout=70.0
